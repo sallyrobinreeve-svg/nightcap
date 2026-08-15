@@ -1,0 +1,143 @@
+workflows:
+  ios-nightcap-flutter:
+    name: NightCapt Flutter iOS
+    max_build_duration: 120
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: Codemagic
+    environment:
+      groups:
+        - nightcapt
+      vars:
+        APP_STORE_CONNECT_ALTOOL_ADDITIONAL_ARGUMENTS: '--apple-id "6760034499"'
+        SITE_URL: "https://mynightcap.vercel.app"
+        SUPABASE_URL: "https://wnnpbjwtmayzfcdduvhq.supabase.co"
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.mynightcap.app
+    scripts:
+      - name: Install Flutter dependencies
+        script: |
+          cd flutter_app
+          flutter pub get
+      - name: Set up code signing
+        script: |
+          cd flutter_app
+          xcode-project use-profiles
+      - name: Verify Supabase build credentials
+        script: |
+          echo "SUPABASE_URL is ${SUPABASE_URL:+set}${SUPABASE_URL:-MISSING}"
+          echo "SUPABASE_ANON_KEY is ${SUPABASE_ANON_KEY:+set}${SUPABASE_ANON_KEY:-MISSING}"
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "WARNING: SUPABASE_URL or SUPABASE_ANON_KEY is not set in Codemagic."
+            echo "The app will fetch public config from $SITE_URL/api/mobile-config at runtime."
+          else
+            echo "Supabase credentials are set for compile-time embedding."
+          fi
+      - name: Build Flutter IPA for App Store
+        script: |
+          cd flutter_app
+          BUILD_NUM=$(date +%s)
+          VERSION=$(grep '^version:' pubspec.yaml | awk '{print $2}' | cut -d+ -f1)
+          DART_DEFINES=()
+          if [ -n "$SUPABASE_URL" ]; then
+            DART_DEFINES+=(--dart-define=SUPABASE_URL=$SUPABASE_URL)
+          fi
+          if [ -n "$SUPABASE_ANON_KEY" ]; then
+            DART_DEFINES+=(--dart-define=SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY)
+          fi
+          if [ -n "$SITE_URL" ]; then
+            DART_DEFINES+=(--dart-define=SITE_URL=$SITE_URL)
+          fi
+          flutter build ipa --release \
+            --build-name=$VERSION \
+            --build-number=$BUILD_NUM \
+            "${DART_DEFINES[@]}" \
+            --export-options-plist=$HOME/export_options.plist
+    artifacts:
+      - flutter_app/build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+
+  ios-nightcap:
+    name: NightCapt iOS
+    max_build_duration: 120
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: Codemagic
+    environment:
+      vars:
+        XCODE_WORKSPACE: "App.xcworkspace"
+        XCODE_SCHEME: "App"
+        # NightCapt App Store Connect app ID — fixes altool "Cannot determine Apple ID" on Xcode 26
+        APP_STORE_CONNECT_ALTOOL_ADDITIONAL_ARGUMENTS: '--apple-id "6760034499"'
+      xcode: latest
+      cocoapods: default
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.mynightcap.app
+    scripts:
+      - name: Install npm dependencies
+        script: npm install
+      - name: Prepare Capacitor www shell
+        script: mkdir -p www
+      - name: Add iOS platform and sync
+        script: |
+          npx cap add ios --packagemanager CocoaPods
+          npx cap sync ios
+      - name: Add Camera/Photo Library permissions to Info.plist
+        script: |
+          PLIST="$CM_BUILD_DIR/ios/App/App/Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'NightCapt uses the camera for profile photos'" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string 'NightCapt needs photo library access for profile pictures and journal entries'" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryAddUsageDescription string 'NightCapt saves photos to your journal entries'" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes array" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0 dict" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLName string com.mynightcap.app" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string com.mynightcap.app" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" "$PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" "$PLIST"
+      - name: Generate app icon
+        script: npx capacitor-assets generate --ios
+      - name: Install CocoaPods
+        script: |
+          cd $CM_BUILD_DIR/ios/App
+          pod repo update
+          pod install
+      - name: Set up code signing
+        script: xcode-project use-profiles
+      - name: Verify iOS project structure
+        script: |
+          ls -la $CM_BUILD_DIR/ios/App/
+          ls -la $CM_BUILD_DIR/ios/App/*.xcworkspace 2>/dev/null || true
+      - name: Set app version
+        script: |
+          VERSION=$(node -p "require('./package.json').version")
+          PLIST="$CM_BUILD_DIR/ios/App/App/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $VERSION" "$PLIST"
+          sed -i '' "s/MARKETING_VERSION = .*/MARKETING_VERSION = $VERSION;/g" $CM_BUILD_DIR/ios/App/App.xcodeproj/project.pbxproj
+          echo "Set CFBundleShortVersionString to $VERSION"
+      - name: Set unique build number
+        script: |
+          BUILD_NUM=$(date +%s)
+          echo "Setting build number to $BUILD_NUM"
+          sed -i '' "s/CURRENT_PROJECT_VERSION = .*/CURRENT_PROJECT_VERSION = $BUILD_NUM;/g" $CM_BUILD_DIR/ios/App/App.xcodeproj/project.pbxproj
+      - name: Build IPA for App Store
+        script: |
+          cd $CM_BUILD_DIR
+          xcode-project build-ipa --workspace ios/App/App.xcworkspace --scheme App --ipa-directory $CM_BUILD_DIR/ios/App/build/ios/ipa -v
+    artifacts:
+      - ios/App/build/ios/ipa/*.ipa
+      - build/ios/ipa/*.ipa
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
