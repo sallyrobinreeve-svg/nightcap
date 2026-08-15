@@ -87,6 +87,8 @@ Open [http://localhost:3000](http://localhost:3000).
 
 Phone sign-in needs SMS to be configured in Supabase. Existing email/password accounts are not converted automatically — those users sign up again with their mobile number.
 
+For a real production launch (live site + real SMS), follow **[docs/LAUNCH.md](docs/LAUNCH.md)**.
+
 ## Flutter mobile app
 
 The native Flutter client lives in `flutter_app/`.
